@@ -1,0 +1,224 @@
+.TH SNAPSTATS 1 "2026-03-08" "snapstats" "User Commands"
+.SH NAME
+snapstats \- SnapRAID content file scrub age statistics
+.SH SYNOPSIS
+.B snapstats
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B snapstats
+parses a SnapRAID content file and reports scrub age statistics per file,
+per disk, and across the array. It does not read from or write to any data
+disk — all information is extracted from the content file alone.
+.PP
+The content file reflects the state of the array as of the last successful
+.B snapraid sync
+run. Files added or deleted since then are not visible to snapstats.
+.PP
+On first run, parsed statistics are cached in
+.IR /var/cache/snapstats/snapstats.cache .
+Subsequent runs within 2 hours reuse the cache if the content file has not
+changed (checked via mtime and size). This reduces a typical runtime of
+~3 seconds to under 0.3 seconds.
+.SH OPTIONS
+.SS "Output control"
+.TP
+.B \-\-disk
+Show a per-disk scrub age breakdown below the main chart.
+.TP
+.BI \-\-top \ N
+Show the
+.I N
+oldest files by scrub age (default 20 if flag is given without a number).
+Files with zero size are excluded.
+.TP
+.B \-\-all
+Equivalent to
+.B \-\-disk \-\-top\ 20 .
+.TP
+.B \-\-json
+Output a JSON summary to stdout instead of the visual report.
+Implies
+.BR \-\-no\-color .
+See
+.B JSON OUTPUT
+below.
+.TP
+.B \-q ", " \-\-quiet
+Suppress all output. Useful in cron jobs where only the exit code matters.
+Mutually exclusive with
+.BR \-\-verbose .
+.TP
+.B \-v ", " \-\-verbose
+Show parse and cache progress. Mutually exclusive with
+.BR \-\-quiet .
+.TP
+.B \-\-no\-color
+Disable ANSI color output. Also honoured via the
+.B NO_COLOR
+environment variable.
+.SS "Threshold and alerting"
+.TP
+.BI \-\-max\-age \ DAYS
+Exit with code
+.B 2
+if the oldest scrubbed file exceeds
+.I DAYS
+days. Must be at least 1.
+Also collapses the age chart so that rows beyond
+.I DAYS
+are merged into a single
+.RI \fIDays\fR+
+bucket (shown in red).
+.SS "Content file location"
+.TP
+.BI \-\-content \ PATH
+Use
+.I PATH
+as the content file instead of reading the location from snapraid.conf.
+.TP
+.BI \-\-conf \ PATH
+Use
+.I PATH
+as the snapraid.conf file.
+Default:
+.IR /etc/snapraid.conf .
+.SS "Cache control"
+.TP
+.B \-\-no\-cache
+Ignore any existing cache and force a full re-parse. The new results are
+written back to the cache.
+.TP
+.B \-\-use\-cache
+Use the cache even if it is older than the 2-hour TTL. The content file
+signature is still verified — if the content file has changed the cache is
+discarded and a full re-parse is performed regardless.
+Mutually exclusive with
+.BR \-\-no\-cache .
+.SH "CHART LAYOUT"
+The main output is an 80-column scrub age chart. Each row represents a
+distinct scrub age in days. Rows with zero files are hidden, except for the
+.I 60+
+(or
+.IR N+ )
+and
+.I not scrubbed
+rows which always appear.
+.PP
+Bar width scales proportionally to file count. The percentage shown is
+the fraction of total tracked files in that age bucket.
+.PP
+Zero-byte files have no data blocks and are excluded from scrub tracking.
+They are counted separately and shown in the footer as
+.IR (+N\ empty) .
+.SS "Color codes"
+.TS
+l l.
+\fBGreen (bright)\fR	today / \(<=7 days
+\fBGreen\fR	8\(en14 days
+\fBYellow\fR	15\(en30 days
+\fBRed\fR	31+ days, or \fIN+\fR bucket when \fB\-\-max\-age\fR is set
+\fBDark gray\fR	never scrubbed
+.TE
+.SH "JSON OUTPUT"
+When
+.B \-\-json
+is used, a single JSON object is printed to stdout. Fields:
+.TP
+.B generated
+ISO 8601 UTC timestamp of the run.
+.TP
+.B total_files
+Total number of files tracked in the content file.
+.TP
+.B total_size
+Total size in bytes.
+.TP
+.B unscrubbed_files
+Number of non-zero-byte files with no scrub record.
+.TP
+.B unscrubbed_size
+Total size in bytes of unscrubbed files.
+.TP
+.B oldest_scrub_days
+Age in days of the oldest scrubbed block across all files.
+.TP
+.B oldest_scrub_file
+Path of the file containing that oldest block.
+.TP
+.B per_disk
+Object keyed by disk name. Each entry has
+.BR files ,
+.BR size ,
+and
+.B oldest_scrub_days
+fields.
+.TP
+.B empty_disks
+Array of disk names present in the content file but containing no files.
+.TP
+.B max_age_threshold
+Only present when
+.B \-\-max\-age
+is used. The threshold value supplied.
+.TP
+.B max_age_exceeded
+Only present when
+.B \-\-max\-age
+is used. Boolean: true if
+.B oldest_scrub_days
+exceeds the threshold.
+.SH "EXIT CODES"
+.TP
+.B 0
+Normal exit. All checks passed.
+.TP
+.B 2
+.B \-\-max\-age
+was specified and the oldest scrub age exceeds the threshold.
+.TP
+.B 3
+Configuration or runtime error (missing config file, content file not
+found, terminal too narrow).
+.SH CACHE
+.TP
+.I /var/cache/snapstats/snapstats.cache
+Pickle file storing parsed file statistics. Keyed on the content file path,
+mtime, and size. TTL: 2 hours. The directory is created automatically on
+first run.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+If set to any non-empty value, disables ANSI color output.
+Equivalent to
+.BR \-\-no\-color .
+.SH EXAMPLES
+.TP
+Default scrub age report:
+.B snapstats
+.TP
+Full report with per-disk breakdown and 30 oldest files:
+.B snapstats \-\-disk \-\-top 30
+.TP
+Alert if any file is older than 30 days (for cron):
+.B snapstats \-q \-\-max\-age 30 || echo "scrub overdue"
+.TP
+Machine-readable output with threshold check:
+.B snapstats \-\-json \-\-max\-age 21
+.TP
+Force re-parse ignoring cache:
+.B snapstats \-\-no\-cache
+.TP
+Inspect a non-default content file:
+.B snapstats \-\-content /mnt/tank/snapraid.content
+.SH "SEE ALSO"
+.BR snapraid (1)
+.SH NOTES
+snapstats does not verify data integrity. For scrub operations use
+.BR "snapraid scrub" .
+To scrub files with no scrub record:
+.PP
+.RS
+.B snapraid scrub \-p 0 \-o 0
+.RE
+.SH AUTHOR
+Written with Claude (Anthropic).
